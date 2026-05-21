@@ -122,12 +122,14 @@ The app defaults to `Auto` axis selection:
 
 Manual `Horizontal` and `Vertical` overrides are available for files whose
 orientation metadata has already been baked in or stripped by another app.
-The preview pane renders the first scanned image with the same automatic/manual
-axis resolution, so a wrong axis choice is visible before starting a batch.
+The preview pane renders a selected file from the scanned list with the same
+automatic/manual axis resolution, so a wrong axis choice is visible before
+starting a batch. If Auto falls back to portrait dimensions because orientation
+metadata is missing, the UI shows a warning.
 
 Implementation:
 
-- `DesqueezeAxis.resolved(orientation:imageExtent:)`
+- `DesqueezeAxis.resolution(orientation:imageExtent:)`
 - `ImageBatchProcessor.desqueeze(_:factor:axis:)`
 - Core Image filter name: `CILanczosScaleTransform`
 
@@ -199,6 +201,19 @@ After a batch, the app writes `PhotoDesqueeze manifest.csv` into the output
 folder. The manifest records source path, output path, status, selected axis,
 resolved axis, dimensions, duration, camera fields, and error text.
 
+Before processing, the app runs a non-rendering preflight that scans supported
+images and plans each output path. The preflight reports:
+
+- total files
+- RAW files
+- rendered files
+- normal writes
+- auto-renamed outputs
+- overwrites
+- skipped existing outputs
+
+Overwrite mode requires user confirmation before processing starts.
+
 ## App UI
 
 The SwiftUI interface is a practical batch tool rather than a landing page:
@@ -207,8 +222,11 @@ The SwiftUI interface is a practical batch tool rather than a landing page:
 - lens preset/custom factor controls
 - axis, color space, and existing-file controls
 - recursive scanning and folder-preservation toggles
-- side-by-side original/desqueezed preview
-- progress, cancellation, output reveal, and result reveal actions
+- preflight scan summary
+- side-by-side original/desqueezed preview with previous/next navigation
+- progress, cancellation, retry-failed, output reveal, source reveal, and copy-error actions
+- result filters for all statuses
+- saved processing settings plus reset to defaults
 
 The target bundle identifier is `dev.niklasschmidt.PhotoDesqueeze`. Signing is
 manual, and no team ID, certificate, profile, or private key is committed.
@@ -222,10 +240,14 @@ RAW files in the repository:
 - Output paths preserve relative folders.
 - Output paths avoid overwrites or skip existing destinations according to the
   selected collision mode.
+- Preflight counts write, auto-rename, overwrite, and skip output plans.
 - Scanner finds RAW and rendered image extensions recursively and non-recursively.
 - Automatic axis selection handles rotated metadata and portrait dimensions.
+- Factor parsing handles dot/comma decimals and invalid input.
+- Preview selection clamps navigation bounds.
+- Retry selection includes failed results only.
 - Generated TIFF fixtures validate horizontal and vertical 16-bit TIFF output.
-- Generated TIFF fixtures validate manifest creation.
+- Generated TIFF fixtures validate manifest creation, including cancelled rows.
 
 Command:
 
@@ -241,7 +263,7 @@ xcodebuild test \
 
 Useful follow-ups after the current version:
 
-- Add a small per-file preview picker instead of previewing only the first image.
+- Add a searchable per-file preview picker for very large folders.
 - Add optional squeeze mode for workflows that need to reverse a prior desqueeze.
 - Add configurable RAW development controls such as exposure bias, white balance,
   and highlight recovery if Core Image exposes the needed data for a file.

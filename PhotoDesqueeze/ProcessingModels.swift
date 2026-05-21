@@ -54,15 +54,77 @@ enum DesqueezeAxis: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     func resolved(orientation: CGImagePropertyOrientation?, imageExtent: CGRect) -> DesqueezeAxis {
+        resolution(orientation: orientation, imageExtent: imageExtent).resolvedAxis
+    }
+
+    func resolution(orientation: CGImagePropertyOrientation?, imageExtent: CGRect) -> AxisResolution {
         switch self {
         case .horizontal, .vertical:
-            return self
+            return AxisResolution(selectedAxis: self, resolvedAxis: self)
         case .automatic:
             if orientation?.hasQuarterTurn == true {
-                return .vertical
+                return AxisResolution(selectedAxis: self, resolvedAxis: .vertical)
             }
-            return imageExtent.height > imageExtent.width ? .vertical : .horizontal
+            let resolvedAxis: DesqueezeAxis = imageExtent.height > imageExtent.width ? .vertical : .horizontal
+            let warning = resolvedAxis == .vertical && orientation == nil
+                ? "Auto chose vertical from portrait dimensions because no orientation metadata was found."
+                : nil
+            return AxisResolution(
+                selectedAxis: self,
+                resolvedAxis: resolvedAxis,
+                warningMessage: warning
+            )
         }
+    }
+}
+
+struct AxisResolution: Equatable {
+    var selectedAxis: DesqueezeAxis
+    var resolvedAxis: DesqueezeAxis
+    var warningMessage: String?
+}
+
+enum FactorValidation: Equatable {
+    case valid(Double)
+    case empty
+    case notNumeric
+    case nonPositive
+
+    var factor: Double? {
+        if case .valid(let factor) = self {
+            return factor
+        }
+        return nil
+    }
+
+    var message: String? {
+        switch self {
+        case .valid:
+            return nil
+        case .empty:
+            return "Enter a desqueeze factor."
+        case .notNumeric:
+            return "Factor must be a number."
+        case .nonPositive:
+            return "Factor must be greater than zero."
+        }
+    }
+
+    var isValid: Bool {
+        factor != nil
+    }
+}
+
+enum FactorInputParser {
+    static func validate(_ text: String) -> FactorValidation {
+        let normalized = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+
+        guard !normalized.isEmpty else { return .empty }
+        guard let value = Double(normalized) else { return .notNumeric }
+        guard value > 0 else { return .nonPositive }
+        return .valid(value)
     }
 }
 
@@ -79,6 +141,115 @@ enum OutputFormat: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
     var fileExtension: String { "tiff" }
+}
+
+enum ImageSourceKind: String, Equatable {
+    case raw = "RAW"
+    case rendered = "Rendered"
+}
+
+enum PlannedOutputAction: String, Equatable {
+    case write = "Write"
+    case autoRename = "Auto Rename"
+    case overwrite = "Overwrite"
+    case skip = "Skip"
+}
+
+struct PreflightFilePlan: Equatable {
+    var sourceURL: URL
+    var outputURL: URL
+    var sourceKind: ImageSourceKind
+    var action: PlannedOutputAction
+}
+
+struct BatchPreflight: Equatable {
+    var filePlans: [PreflightFilePlan]
+    var warnings: [String] = []
+
+    var sourceURLs: [URL] {
+        filePlans.map(\.sourceURL)
+    }
+
+    var totalFiles: Int {
+        filePlans.count
+    }
+
+    var rawFiles: Int {
+        filePlans.filter { $0.sourceKind == .raw }.count
+    }
+
+    var renderedFiles: Int {
+        filePlans.filter { $0.sourceKind == .rendered }.count
+    }
+
+    var plannedWrites: Int {
+        count(.write)
+    }
+
+    var plannedAutoRenames: Int {
+        count(.autoRename)
+    }
+
+    var plannedOverwrites: Int {
+        count(.overwrite)
+    }
+
+    var plannedSkips: Int {
+        count(.skip)
+    }
+
+    var summary: String {
+        guard totalFiles > 0 else { return "No supported images found." }
+        return "\(totalFiles) files: \(rawFiles) RAW, \(renderedFiles) rendered. \(plannedWrites) write, \(plannedAutoRenames) rename, \(plannedOverwrites) overwrite, \(plannedSkips) skip."
+    }
+
+    private func count(_ action: PlannedOutputAction) -> Int {
+        filePlans.filter { $0.action == action }.count
+    }
+}
+
+struct PreviewSelection: Equatable {
+    private(set) var files: [URL] = []
+    private(set) var selectedIndex: Int = 0
+
+    var selectedURL: URL? {
+        guard files.indices.contains(selectedIndex) else { return nil }
+        return files[selectedIndex]
+    }
+
+    var totalCount: Int {
+        files.count
+    }
+
+    var positionLabel: String {
+        guard !files.isEmpty else { return "0 of 0" }
+        return "\(selectedIndex + 1) of \(files.count)"
+    }
+
+    var canMovePrevious: Bool {
+        selectedIndex > 0
+    }
+
+    var canMoveNext: Bool {
+        selectedIndex + 1 < files.count
+    }
+
+    mutating func replaceFiles(_ newFiles: [URL], resetIndex: Bool) {
+        files = newFiles
+        if resetIndex {
+            selectedIndex = 0
+        } else {
+            selectedIndex = min(selectedIndex, max(0, newFiles.count - 1))
+        }
+    }
+
+    mutating func move(by delta: Int) {
+        guard !files.isEmpty else {
+            selectedIndex = 0
+            return
+        }
+        selectedIndex = min(max(0, selectedIndex + delta), files.count - 1)
+    }
 }
 
 struct ImageDimensions: Equatable {
@@ -250,14 +421,56 @@ struct BatchProgress: Equatable {
 
 struct PreviewResult: Equatable {
     var sourceURL: URL
+    var sourceIndex: Int
+    var totalSources: Int
+    var sourceKind: ImageSourceKind
     var sourceDimensions: ImageDimensions
     var outputDimensions: ImageDimensions
+    var selectedAxis: DesqueezeAxis
     var resolvedAxis: DesqueezeAxis
+    var axisWarning: String?
     var originalPNGData: Data
     var desqueezedPNGData: Data
 
     var summary: String {
         "\(sourceURL.lastPathComponent): \(sourceDimensions.label) -> \(outputDimensions.label), \(resolvedAxis.rawValue.lowercased())"
+    }
+
+    var positionLabel: String {
+        "\(sourceIndex + 1) of \(max(totalSources, 1))"
+    }
+}
+
+enum ResultFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case succeeded = "Done"
+    case skipped = "Skipped"
+    case failed = "Failed"
+    case cancelled = "Cancelled"
+
+    var id: String { rawValue }
+
+    func includes(_ result: ProcessedImageResult) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .succeeded:
+            return result.status == .succeeded
+        case .skipped:
+            return result.status == .skipped
+        case .failed:
+            return result.status == .failed
+        case .cancelled:
+            return result.status == .cancelled
+        }
+    }
+}
+
+enum ResultRetrySelection {
+    static func sources(from results: [ProcessedImageResult]) -> [URL] {
+        results
+            .filter { $0.status == .failed }
+            .map(\.sourceURL)
     }
 }
 

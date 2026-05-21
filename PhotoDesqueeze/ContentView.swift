@@ -9,18 +9,30 @@ struct ContentView: View {
             header
             folderSection
             settingsSection
+            preflightSection
             previewSection
             processingSection
             resultsSection
         }
         .padding(24)
-        .frame(minWidth: 860, minHeight: 720)
-        .onChange(of: model.inputFolder) { _, _ in model.refreshPreview() }
-        .onChange(of: model.selectedPreset) { _, _ in model.refreshPreview() }
-        .onChange(of: model.customFactorText) { _, _ in model.refreshPreview() }
-        .onChange(of: model.desqueezeAxis) { _, _ in model.refreshPreview() }
-        .onChange(of: model.outputColorSpace) { _, _ in model.refreshPreview() }
-        .onChange(of: model.scanSubfolders) { _, _ in model.refreshPreview() }
+        .frame(minWidth: 980, minHeight: 820)
+        .onChange(of: model.selectedPreset) { _, _ in model.refreshConfiguration() }
+        .onChange(of: model.customFactorText) { _, _ in model.refreshConfiguration() }
+        .onChange(of: model.desqueezeAxis) { _, _ in model.refreshConfiguration() }
+        .onChange(of: model.outputColorSpace) { _, _ in model.refreshConfiguration() }
+        .onChange(of: model.collisionMode) { _, _ in model.refreshConfiguration() }
+        .onChange(of: model.scanSubfolders) { _, _ in model.refreshConfiguration(resetPreview: true) }
+        .onChange(of: model.preserveSubfolders) { _, _ in model.refreshConfiguration() }
+        .alert("Confirm Overwrite", isPresented: $model.showOverwriteConfirmation) {
+            Button("Cancel", role: .cancel) {
+                model.cancelOverwriteConfirmation()
+            }
+            Button("Overwrite", role: .destructive) {
+                model.confirmOverwriteAndStart()
+            }
+        } message: {
+            Text(model.overwriteConfirmationMessage)
+        }
     }
 
     private var header: some View {
@@ -70,6 +82,12 @@ struct ContentView: View {
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 82)
                     }
+
+                    if let message = model.factorValidationMessage {
+                        Label(message, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                 }
 
                 HStack(spacing: 12) {
@@ -101,6 +119,54 @@ struct ContentView: View {
 
                     Toggle("Scan subfolders", isOn: $model.scanSubfolders)
                     Toggle("Preserve folders", isOn: $model.preserveSubfolders)
+
+                    Spacer()
+
+                    Button {
+                        model.resetSettings()
+                    } label: {
+                        Label("Reset", systemImage: "arrow.counterclockwise")
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var preflightSection: some View {
+        GroupBox("Scan") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Text(model.preflightMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Spacer()
+
+                    if model.isRefreshingPreflight {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+
+                if let preflight = model.preflight {
+                    HStack(spacing: 8) {
+                        CountBadge(title: "Files", value: preflight.totalFiles)
+                        CountBadge(title: "RAW", value: preflight.rawFiles)
+                        CountBadge(title: "Rendered", value: preflight.renderedFiles)
+                        CountBadge(title: "Write", value: preflight.plannedWrites)
+                        CountBadge(title: "Rename", value: preflight.plannedAutoRenames)
+                        CountBadge(title: "Overwrite", value: preflight.plannedOverwrites)
+                        CountBadge(title: "Skip", value: preflight.plannedSkips)
+                    }
+
+                    ForEach(preflight.warnings, id: \.self) { warning in
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                 }
             }
             .padding(.vertical, 4)
@@ -111,6 +177,26 @@ struct ContentView: View {
         GroupBox("Preview") {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
+                    Button {
+                        model.selectPreviousPreview()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .disabled(!model.previewSelection.canMovePrevious || model.isProcessing)
+                    .help("Previous preview")
+
+                    Text(model.preview?.positionLabel ?? model.previewSelection.positionLabel)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+
+                    Button {
+                        model.selectNextPreview()
+                    } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .disabled(!model.previewSelection.canMoveNext || model.isProcessing)
+                    .help("Next preview")
+
                     Text(model.previewMessage)
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -129,7 +215,20 @@ struct ContentView: View {
                     } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
-                    .disabled(model.inputFolder == nil || model.isProcessing)
+                    .disabled(model.previewSelection.selectedURL == nil || model.isProcessing)
+                }
+
+                if let preview = model.preview {
+                    HStack(spacing: 8) {
+                        InfoPill(text: preview.sourceKind.rawValue)
+                        InfoPill(text: "\(preview.sourceDimensions.label) -> \(preview.outputDimensions.label)")
+                        InfoPill(text: "\(preview.selectedAxis.rawValue) -> \(preview.resolvedAxis.rawValue)")
+                    }
+                    if let warning = preview.axisWarning {
+                        Label(warning, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                 }
 
                 HStack(spacing: 12) {
@@ -152,6 +251,13 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!model.canStart)
+
+                Button {
+                    model.retryFailedOnly()
+                } label: {
+                    Label("Retry Failed", systemImage: "arrow.clockwise")
+                }
+                .disabled(!model.canRetryFailed)
 
                 Button {
                     model.cancelProcessing()
@@ -190,12 +296,55 @@ struct ContentView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(model.results) { result in
-                    ResultRow(result: result)
+                VStack(alignment: .leading, spacing: 8) {
+                    Picker("Filter", selection: $model.resultFilter) {
+                        ForEach(ResultFilter.allCases) { filter in
+                            Text(filter.rawValue).tag(filter)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 440)
+
+                    List(model.filteredResults) { result in
+                        ResultRow(result: result) {
+                            model.copyError(for: result)
+                        }
+                    }
+                    .listStyle(.plain)
                 }
-                .listStyle(.plain)
             }
         }
+    }
+}
+
+private struct CountBadge: View {
+    var title: String
+    var value: Int
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Text("\(value)")
+                .monospacedDigit()
+        }
+        .font(.caption)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+private struct InfoPill: View {
+    var text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -226,6 +375,7 @@ private struct FolderRow: View {
 
 private struct ResultRow: View {
     var result: ProcessedImageResult
+    var copyError: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -236,7 +386,7 @@ private struct ResultRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(result.sourceName)
                     .font(.callout)
-                Text("\(result.message)  \(result.dimensionsLabel)")
+                Text("\(result.status.rawValue) | \(result.message) | \(result.dimensionsLabel)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -258,6 +408,16 @@ private struct ResultRow: View {
             }
             .buttonStyle(.borderless)
             .help("Reveal source")
+
+            if result.failureReason != nil {
+                Button {
+                    copyError()
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .help("Copy error")
+            }
 
             if let outputURL = result.outputURL {
                 Button {

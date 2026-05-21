@@ -26,10 +26,13 @@ editable masters.
 - Folder input and folder output.
 - RAW-first loading through Apple's Core Image RAW pipeline.
 - Fallback support for common rendered formats supported by macOS, including TIFF, JPEG, PNG, HEIC/HEIF, and WebP.
-- Batch processing with progress, cancellation, and structured per-file results.
-- Side-by-side preview from the first image in the selected folder.
+- Batch processing with progress, cancellation, retry-failed, and structured per-file results.
+- Side-by-side preview with previous/next navigation through scanned images.
+- Preflight scan summary with RAW/rendered counts and planned write/rename/overwrite/skip counts.
 - Built-in anamorphic presets plus custom factors.
+- Inline custom factor validation with dot and comma decimal support.
 - Automatic horizontal/vertical desqueeze axis selection with manual overrides.
+- Visible auto-axis resolution and warning when portrait dimensions are used without orientation metadata.
 - 16-bit/channel TIFF export.
 - Display P3 or sRGB output color space.
 - Optional recursive folder scanning.
@@ -38,7 +41,8 @@ editable masters.
 - Atomic TIFF writes, so incomplete temp files are not promoted to final output.
 - Partial safe metadata preservation for TIFF/EXIF camera fields.
 - CSV manifest written to the output folder after each batch.
-- Security-scoped folder bookmarks so selected folders can be restored on launch.
+- Result filtering, reveal actions, and copy-error actions.
+- Security-scoped folder bookmarks and saved processing settings.
 
 ## Build
 
@@ -81,6 +85,7 @@ The processing path is intentionally simple and native:
 - App Sandbox uses user-selected read/write file access, with security-scoped
   bookmarks for restored folders.
 - `UTType` and fallback RAW extensions identify candidate images.
+- A preflight pass plans output paths without rendering images.
 - `CIRAWFilter` opens RAW files supported by macOS.
 - `CIImage(contentsOf:options:)` opens rendered image formats and applies orientation metadata.
 - `CILanczosScaleTransform` performs high-quality scaling. Landscape files are stretched horizontally; 90-degree rotated or portrait files can be stretched vertically.
@@ -99,6 +104,7 @@ More detail is in [Docs/Research.md](Docs/Research.md).
   copied when Image I/O exposes them, while geometry-sensitive orientation data
   is removed from the destination.
 - Automatic axis detection uses orientation metadata first, then image dimensions as a fallback.
+- Preview navigation uses the scanned file list, not per-file axis overrides.
 - Processing is sequential to avoid memory spikes with large RAW batches.
 
 ## References

@@ -4,9 +4,58 @@ import XCTest
 @testable import PhotoDesqueeze
 
 final class PhotoDesqueezeTests: XCTestCase {
+    func testFactorValidationAcceptsCommaAndRejectsInvalidValues() {
+        XCTAssertEqual(FactorInputParser.validate("1.33"), .valid(1.33))
+        XCTAssertEqual(FactorInputParser.validate("1,55"), .valid(1.55))
+        XCTAssertEqual(FactorInputParser.validate(""), .empty)
+        XCTAssertEqual(FactorInputParser.validate("abc"), .notNumeric)
+        XCTAssertEqual(FactorInputParser.validate("0"), .nonPositive)
+        XCTAssertEqual(FactorInputParser.validate("-1.33"), .nonPositive)
+    }
+
     func testFactorLabelIsFilesystemFriendly() {
         XCTAssertEqual(OutputPlanner.factorLabel(1.33), "1_33x")
         XCTAssertEqual(OutputPlanner.factorLabel(2.0), "2_00x")
+    }
+
+    func testPreviewSelectionClampsNavigation() {
+        let first = URL(fileURLWithPath: "/tmp/a.tiff")
+        let second = URL(fileURLWithPath: "/tmp/b.tiff")
+        let third = URL(fileURLWithPath: "/tmp/c.tiff")
+        var selection = PreviewSelection()
+
+        selection.replaceFiles([first, second, third], resetIndex: true)
+        XCTAssertEqual(selection.selectedURL, first)
+        XCTAssertEqual(selection.positionLabel, "1 of 3")
+        XCTAssertFalse(selection.canMovePrevious)
+        XCTAssertTrue(selection.canMoveNext)
+
+        selection.move(by: 2)
+        XCTAssertEqual(selection.selectedURL, third)
+        XCTAssertEqual(selection.positionLabel, "3 of 3")
+        XCTAssertTrue(selection.canMovePrevious)
+        XCTAssertFalse(selection.canMoveNext)
+
+        selection.move(by: 10)
+        XCTAssertEqual(selection.selectedURL, third)
+
+        selection.replaceFiles([first], resetIndex: false)
+        XCTAssertEqual(selection.selectedURL, first)
+        XCTAssertEqual(selection.positionLabel, "1 of 1")
+    }
+
+    func testRetrySelectionUsesOnlyFailedResults() {
+        let failed = URL(fileURLWithPath: "/tmp/failed.tiff")
+        let done = URL(fileURLWithPath: "/tmp/done.tiff")
+        let skipped = URL(fileURLWithPath: "/tmp/skipped.tiff")
+
+        let results = [
+            ProcessedImageResult(sourceURL: failed, outputURL: nil, status: .failed, failureReason: "No decoder"),
+            ProcessedImageResult(sourceURL: done, outputURL: nil, status: .succeeded),
+            ProcessedImageResult(sourceURL: skipped, outputURL: nil, status: .skipped)
+        ]
+
+        XCTAssertEqual(ResultRetrySelection.sources(from: results), [failed])
     }
 
     func testOutputPlannerPreservesRelativeSubfolder() throws {
@@ -100,6 +149,53 @@ final class PhotoDesqueezeTests: XCTestCase {
         )
 
         XCTAssertEqual(plan, .skip(existing))
+    }
+
+    func testPreflightCountsOutputActions() async throws {
+        let root = try makeTemporaryDirectory()
+        let input = root.appendingPathComponent("Input", isDirectory: true)
+        let output = root.appendingPathComponent("Output", isDirectory: true)
+        let clean = input.appendingPathComponent("clean.tiff")
+        let existingSource = input.appendingPathComponent("existing.tiff")
+
+        try FileManager.default.createDirectory(at: input, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: clean.path, contents: Data())
+        FileManager.default.createFile(atPath: existingSource.path, contents: Data())
+        FileManager.default.createFile(
+            atPath: output.appendingPathComponent("existing_desqueezed_1_33x.tiff").path,
+            contents: Data()
+        )
+
+        let processor = ImageBatchProcessor()
+        let autoRename = try await processor.preflight(
+            inputFolder: input,
+            outputFolder: output,
+            options: processingOptions(collisionMode: .autoRename)
+        )
+        XCTAssertEqual(autoRename.totalFiles, 2)
+        XCTAssertEqual(autoRename.renderedFiles, 2)
+        XCTAssertEqual(autoRename.plannedWrites, 1)
+        XCTAssertEqual(autoRename.plannedAutoRenames, 1)
+        XCTAssertEqual(autoRename.plannedOverwrites, 0)
+        XCTAssertEqual(autoRename.plannedSkips, 0)
+
+        let overwrite = try await processor.preflight(
+            inputFolder: input,
+            outputFolder: output,
+            options: processingOptions(collisionMode: .overwrite)
+        )
+        XCTAssertEqual(overwrite.plannedWrites, 1)
+        XCTAssertEqual(overwrite.plannedOverwrites, 1)
+        XCTAssertEqual(overwrite.warnings.count, 1)
+
+        let skip = try await processor.preflight(
+            inputFolder: input,
+            outputFolder: output,
+            options: processingOptions(collisionMode: .skipExisting)
+        )
+        XCTAssertEqual(skip.plannedWrites, 1)
+        XCTAssertEqual(skip.plannedSkips, 1)
     }
 
     func testScannerFindsRawAndRenderedImageExtensions() throws {
@@ -280,6 +376,27 @@ final class PhotoDesqueezeTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: existing), Data("existing".utf8))
     }
 
+    func testManifestIncludesCancelledRows() throws {
+        let root = try makeTemporaryDirectory()
+        let output = root.appendingPathComponent("Output", isDirectory: true)
+        let source = root.appendingPathComponent("cancelled.tiff")
+
+        let result = ProcessedImageResult(
+            sourceURL: source,
+            outputURL: nil,
+            status: .cancelled,
+            axisMode: .automatic,
+            failureReason: "Cancelled"
+        )
+
+        try OutputManifestWriter.write(results: [result], to: output)
+        let manifestURL = output.appendingPathComponent(OutputManifestWriter.manifestFileName)
+        let manifest = try String(contentsOf: manifestURL, encoding: .utf8)
+
+        XCTAssertTrue(manifest.contains("Cancelled"))
+        XCTAssertTrue(manifest.contains("cancelled.tiff"))
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("PhotoDesqueezeTests-\(UUID().uuidString)", isDirectory: true)
@@ -288,5 +405,17 @@ final class PhotoDesqueezeTests: XCTestCase {
             try? FileManager.default.removeItem(at: url)
         }
         return url
+    }
+
+    private func processingOptions(collisionMode: CollisionMode) -> ProcessingOptions {
+        ProcessingOptions(
+            factor: 1.33,
+            axis: .automatic,
+            colorSpace: .displayP3,
+            outputFormat: .tiff16,
+            collisionMode: collisionMode,
+            recursive: false,
+            preserveSubfolders: false
+        )
     }
 }

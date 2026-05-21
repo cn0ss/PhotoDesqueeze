@@ -67,13 +67,22 @@ struct ImageFileScanner {
 }
 
 enum OutputPlan: Equatable {
-    case write(URL)
+    case write(URL, PlannedOutputAction)
     case skip(URL)
 
     var url: URL {
         switch self {
-        case .write(let url), .skip(let url):
+        case .write(let url, _), .skip(let url):
             return url
+        }
+    }
+
+    var action: PlannedOutputAction {
+        switch self {
+        case .write(_, let action):
+            return action
+        case .skip:
+            return .skip
         }
     }
 }
@@ -84,7 +93,8 @@ struct OutputPlanner {
         inputFolder: URL,
         outputFolder: URL,
         options: ProcessingOptions,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        createDirectory: Bool = true
     ) throws -> OutputPlan {
         let destinationFolder = outputDirectory(
             for: sourceURL,
@@ -93,7 +103,9 @@ struct OutputPlanner {
             preserveSubfolders: options.preserveSubfolders
         )
 
-        try fileManager.createDirectory(at: destinationFolder, withIntermediateDirectories: true)
+        if createDirectory {
+            try fileManager.createDirectory(at: destinationFolder, withIntermediateDirectories: true)
+        }
 
         let suffix = "_desqueezed_\(factorLabel(options.factor))"
         let baseName = sourceURL.deletingPathExtension().lastPathComponent
@@ -101,16 +113,16 @@ struct OutputPlanner {
             .appendingPathComponent("\(baseName)\(suffix).\(options.outputFormat.fileExtension)")
 
         guard fileManager.fileExists(atPath: preferredURL.path) else {
-            return .write(preferredURL)
+            return .write(preferredURL, .write)
         }
 
         switch options.collisionMode {
         case .overwrite:
-            return .write(preferredURL)
+            return .write(preferredURL, .overwrite)
         case .skipExisting:
             return .skip(preferredURL)
         case .autoRename:
-            return .write(firstAvailableURL(preferredURL, fileManager: fileManager))
+            return .write(firstAvailableURL(preferredURL, fileManager: fileManager), .autoRename)
         }
     }
 
@@ -183,45 +195,11 @@ enum OutputManifestWriter {
         guard !results.isEmpty else { return }
 
         let url = outputFolder.appendingPathComponent(manifestFileName)
-        var rows = [
-            [
-                "source_path",
-                "output_path",
-                "status",
-                "selected_axis",
-                "resolved_axis",
-                "source_dimensions",
-                "output_dimensions",
-                "duration_seconds",
-                "camera_make",
-                "camera_model",
-                "lens_model",
-                "capture_date",
-                "error"
-            ]
-        ]
+        var rows: [[String]] = [headerRow]
+        rows.append(contentsOf: results.map { row(for: $0) })
 
-        rows.append(contentsOf: results.map { result in
-            [
-                result.sourceURL.path,
-                result.outputURL?.path ?? "",
-                result.status.rawValue,
-                result.axisMode?.rawValue ?? "",
-                result.resolvedAxis?.rawValue ?? "",
-                result.sourceDimensions?.label ?? "",
-                result.outputDimensions?.label ?? "",
-                result.duration.map { String(format: "%.3f", $0) } ?? "",
-                result.metadata?.cameraMake ?? "",
-                result.metadata?.cameraModel ?? "",
-                result.metadata?.lensModel ?? "",
-                result.metadata?.captureDate ?? "",
-                result.failureReason ?? ""
-            ]
-        })
-
-        let csv = rows
-            .map { row in row.map(escapeCSVField).joined(separator: ",") }
-            .joined(separator: "\n") + "\n"
+        let lines = rows.map { csvLine(for: $0) }
+        let csv = lines.joined(separator: "\n") + "\n"
 
         try fileManager.createDirectory(at: outputFolder, withIntermediateDirectories: true)
         try csv.write(to: url, atomically: true, encoding: .utf8)
@@ -232,6 +210,47 @@ enum OutputManifestWriter {
             return "\"\(field.replacingOccurrences(of: "\"", with: "\"\""))\""
         }
         return field
+    }
+
+    private static let headerRow: [String] = [
+        "source_path",
+        "output_path",
+        "status",
+        "selected_axis",
+        "resolved_axis",
+        "source_dimensions",
+        "output_dimensions",
+        "duration_seconds",
+        "camera_make",
+        "camera_model",
+        "lens_model",
+        "capture_date",
+        "error"
+    ]
+
+    private static func row(for result: ProcessedImageResult) -> [String] {
+        let duration = result.duration.map { String(format: "%.3f", $0) } ?? ""
+        let metadata = result.metadata
+
+        return [
+            result.sourceURL.path,
+            result.outputURL?.path ?? "",
+            result.status.rawValue,
+            result.axisMode?.rawValue ?? "",
+            result.resolvedAxis?.rawValue ?? "",
+            result.sourceDimensions?.label ?? "",
+            result.outputDimensions?.label ?? "",
+            duration,
+            metadata?.cameraMake ?? "",
+            metadata?.cameraModel ?? "",
+            metadata?.lensModel ?? "",
+            metadata?.captureDate ?? "",
+            result.failureReason ?? ""
+        ]
+    }
+
+    private static func csvLine(for row: [String]) -> String {
+        row.map(escapeCSVField).joined(separator: ",")
     }
 }
 
@@ -250,6 +269,7 @@ actor ImageBatchProcessor {
         inputFolder: URL,
         outputFolder: URL,
         options: ProcessingOptions,
+        sourceURLs: [URL]? = nil,
         progress: @escaping @MainActor (BatchProgress) -> Void
     ) async -> [ProcessedImageResult] {
         let inputAccess = inputFolder.startAccessingSecurityScopedResource()
@@ -263,7 +283,7 @@ actor ImageBatchProcessor {
             guard options.factor > 0 else { throw PhotoDesqueezeError.invalidFactor }
             try fileManager.createDirectory(at: outputFolder, withIntermediateDirectories: true)
 
-            let files = try ImageFileScanner.imageFiles(
+            let files = try sourceURLs ?? ImageFileScanner.imageFiles(
                 in: inputFolder,
                 recursive: options.recursive,
                 fileManager: fileManager
@@ -326,9 +346,71 @@ actor ImageBatchProcessor {
         }
     }
 
+    func scanImages(inputFolder: URL, recursive: Bool) async throws -> [URL] {
+        let inputAccess = inputFolder.startAccessingSecurityScopedResource()
+        defer {
+            if inputAccess { inputFolder.stopAccessingSecurityScopedResource() }
+        }
+
+        return try ImageFileScanner.imageFiles(
+            in: inputFolder,
+            recursive: recursive,
+            fileManager: fileManager
+        )
+    }
+
+    func preflight(
+        inputFolder: URL,
+        outputFolder: URL,
+        options: ProcessingOptions,
+        sourceURLs: [URL]? = nil
+    ) async throws -> BatchPreflight {
+        let inputAccess = inputFolder.startAccessingSecurityScopedResource()
+        let outputAccess = outputFolder.startAccessingSecurityScopedResource()
+        defer {
+            if inputAccess { inputFolder.stopAccessingSecurityScopedResource() }
+            if outputAccess { outputFolder.stopAccessingSecurityScopedResource() }
+        }
+
+        guard options.factor > 0 else { throw PhotoDesqueezeError.invalidFactor }
+
+        let files = try sourceURLs ?? ImageFileScanner.imageFiles(
+            in: inputFolder,
+            recursive: options.recursive,
+            fileManager: fileManager
+        )
+        guard !files.isEmpty else { throw PhotoDesqueezeError.noImageFiles(inputFolder) }
+
+        let plans = try files.map { file in
+            let outputPlan = try OutputPlanner.outputPlan(
+                for: file,
+                inputFolder: inputFolder,
+                outputFolder: outputFolder,
+                options: options,
+                fileManager: fileManager,
+                createDirectory: false
+            )
+            return PreflightFilePlan(
+                sourceURL: file,
+                outputURL: outputPlan.url,
+                sourceKind: sourceKind(for: file),
+                action: outputPlan.action
+            )
+        }
+
+        var warnings: [String] = []
+        let overwriteCount = plans.filter { $0.action == .overwrite }.count
+        if overwriteCount > 0 {
+            warnings.append("\(overwriteCount) existing output file\(overwriteCount == 1 ? "" : "s") will be replaced.")
+        }
+
+        return BatchPreflight(filePlans: plans, warnings: warnings)
+    }
+
     func renderPreview(
         inputFolder: URL,
-        options: ProcessingOptions
+        options: ProcessingOptions,
+        sourceIndex: Int = 0
     ) async throws -> PreviewResult {
         guard options.factor > 0 else { throw PhotoDesqueezeError.invalidFactor }
 
@@ -342,21 +424,51 @@ actor ImageBatchProcessor {
             recursive: options.recursive,
             fileManager: fileManager
         )
-        guard let sourceURL = files.first else {
+        guard !files.isEmpty else {
             throw PhotoDesqueezeError.noImageFiles(inputFolder)
+        }
+        let selectedIndex = min(max(0, sourceIndex), files.count - 1)
+        let sourceURL = files[selectedIndex]
+
+        return try await renderPreview(
+            sourceURL: sourceURL,
+            inputFolder: inputFolder,
+            options: options,
+            sourceIndex: selectedIndex,
+            totalSources: files.count
+        )
+    }
+
+    func renderPreview(
+        sourceURL: URL,
+        inputFolder: URL,
+        options: ProcessingOptions,
+        sourceIndex: Int,
+        totalSources: Int
+    ) async throws -> PreviewResult {
+        guard options.factor > 0 else { throw PhotoDesqueezeError.invalidFactor }
+
+        let inputAccess = inputFolder.startAccessingSecurityScopedResource()
+        defer {
+            if inputAccess { inputFolder.stopAccessingSecurityScopedResource() }
         }
 
         let orientation = imageOrientation(for: sourceURL)
         let image = try loadImage(from: sourceURL, orientation: orientation)
         let normalized = normalizedImage(image)
-        let axis = options.axis.resolved(orientation: orientation, imageExtent: normalized.extent)
-        let desqueezed = desqueeze(normalized, factor: options.normalizedFactor, axis: axis)
+        let resolution = options.axis.resolution(orientation: orientation, imageExtent: normalized.extent)
+        let desqueezed = desqueeze(normalized, factor: options.normalizedFactor, axis: resolution.resolvedAxis)
 
         return PreviewResult(
             sourceURL: sourceURL,
+            sourceIndex: sourceIndex,
+            totalSources: totalSources,
+            sourceKind: sourceKind(for: sourceURL),
             sourceDimensions: ImageDimensions(extent: normalized.extent),
             outputDimensions: ImageDimensions(extent: desqueezed.extent),
-            resolvedAxis: axis,
+            selectedAxis: options.axis,
+            resolvedAxis: resolution.resolvedAxis,
+            axisWarning: resolution.warningMessage,
             originalPNGData: try previewPNGData(for: normalized),
             desqueezedPNGData: try previewPNGData(for: desqueezed)
         )
@@ -504,24 +616,33 @@ actor ImageBatchProcessor {
             aspectRatio = 1.0 / factor
         }
 
-        return normalized
-            .applyingFilter(
-                "CILanczosScaleTransform",
-                parameters: [
-                    kCIInputScaleKey: scale,
-                    kCIInputAspectRatioKey: aspectRatio
-                ]
-            )
-            .cropped(to: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+        let parameters: [String: Any] = [
+            kCIInputScaleKey: scale,
+            kCIInputAspectRatioKey: aspectRatio
+        ]
+        let scaled = normalized.applyingFilter(
+            "CILanczosScaleTransform",
+            parameters: parameters
+        )
+        let targetRect = CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight)
+
+        return scaled.cropped(to: targetRect)
     }
 
     private func previewPNGData(for image: CIImage) throws -> Data {
         let maxDimension: CGFloat = 900
         let extent = image.extent
         let scale = min(1, maxDimension / max(extent.width, extent.height))
-        let previewImage = scale < 1
-            ? image.applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: scale])
-            : image
+        let previewImage: CIImage
+        if scale < 1 {
+            let parameters: [String: Any] = [kCIInputScaleKey: scale]
+            previewImage = image.applyingFilter(
+                "CILanczosScaleTransform",
+                parameters: parameters
+            )
+        } else {
+            previewImage = image
+        }
 
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
               let cgImage = context.createCGImage(previewImage, from: previewImage.extent) else {
@@ -538,11 +659,12 @@ actor ImageBatchProcessor {
             throw PhotoDesqueezeError.cannotCreateImage(URL(fileURLWithPath: "preview"))
         }
 
-        CGImageDestinationAddImage(destination, cgImage, [
+        let destinationProperties: [CFString: Any] = [
             kCGImageDestinationEmbedThumbnail: false,
             kCGImagePropertyColorModel: kCGImagePropertyColorModelRGB,
             kCGImagePropertyProfileName: colorSpace.name ?? CGColorSpace.sRGB
-        ] as CFDictionary)
+        ]
+        CGImageDestinationAddImage(destination, cgImage, destinationProperties as CFDictionary)
 
         guard CGImageDestinationFinalize(destination) else {
             throw PhotoDesqueezeError.cannotCreateImage(URL(fileURLWithPath: "preview"))
@@ -563,12 +685,16 @@ actor ImageBatchProcessor {
         )
 
         do {
+            let tiffOptions: [CIImageRepresentationOption: Any] = [
+                .properties: metadata.safeDestinationProperties
+            ]
+
             try context.writeTIFFRepresentation(
                 of: image,
                 to: temporaryURL,
                 format: .RGBA16,
                 colorSpace: colorSpace,
-                options: [.properties: metadata.safeDestinationProperties]
+                options: tiffOptions
             )
 
             if fileManager.fileExists(atPath: outputURL.path) {
@@ -620,16 +746,25 @@ actor ImageBatchProcessor {
             destinationProperties[kCGImagePropertyExifDictionary] = safeExif
         }
 
+        let cameraMake = stringValue(tiff[kCGImagePropertyTIFFMake])
+        let cameraModel = stringValue(tiff[kCGImagePropertyTIFFModel])
+        let lensModel = stringValue(exif[kCGImagePropertyExifLensModel])
+        let exifCaptureDate = stringValue(exif[kCGImagePropertyExifDateTimeOriginal])
+        let tiffCaptureDate = stringValue(tiff[kCGImagePropertyTIFFDateTime])
+        let iso = stringValue(exif[kCGImagePropertyExifISOSpeedRatings])
+        let exposureTime = stringValue(exif[kCGImagePropertyExifExposureTime])
+        let aperture = stringValue(exif[kCGImagePropertyExifFNumber])
+        let focalLength = stringValue(exif[kCGImagePropertyExifFocalLength])
+
         return ImageMetadata(
-            cameraMake: stringValue(tiff[kCGImagePropertyTIFFMake]),
-            cameraModel: stringValue(tiff[kCGImagePropertyTIFFModel]),
-            lensModel: stringValue(exif[kCGImagePropertyExifLensModel]),
-            captureDate: stringValue(exif[kCGImagePropertyExifDateTimeOriginal])
-                ?? stringValue(tiff[kCGImagePropertyTIFFDateTime]),
-            iso: stringValue(exif[kCGImagePropertyExifISOSpeedRatings]),
-            exposureTime: stringValue(exif[kCGImagePropertyExifExposureTime]),
-            aperture: stringValue(exif[kCGImagePropertyExifFNumber]),
-            focalLength: stringValue(exif[kCGImagePropertyExifFocalLength]),
+            cameraMake: cameraMake,
+            cameraModel: cameraModel,
+            lensModel: lensModel,
+            captureDate: exifCaptureDate ?? tiffCaptureDate,
+            iso: iso,
+            exposureTime: exposureTime,
+            aperture: aperture,
+            focalLength: focalLength,
             safeDestinationProperties: destinationProperties
         )
     }
@@ -654,5 +789,9 @@ actor ImageBatchProcessor {
             throw PhotoDesqueezeError.cannotCreateColorSpace(outputColorSpace)
         }
         return colorSpace
+    }
+
+    private func sourceKind(for url: URL) -> ImageSourceKind {
+        ImageFileScanner.isLikelyRAW(url) ? .raw : .rendered
     }
 }
