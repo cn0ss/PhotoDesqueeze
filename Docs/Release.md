@@ -52,9 +52,20 @@ stage.
 
 6. GitHub Actions runs `.github/workflows/release.yml`.
 
-7. Download the `.zip` and `.dmg` from GitHub Releases.
+   A full Developer ID release can take tens of minutes because it runs macOS
+   tests, archives the app, notarizes the app, creates the DMG, notarizes the
+   DMG, verifies Gatekeeper, and only then publishes the GitHub Release. The
+   workflow has explicit step timeouts so stalled Apple or Xcode operations fail
+   instead of waiting indefinitely.
 
-8. Verify on a clean macOS user account:
+7. If a tagged run was canceled before publishing, re-run the release from the
+   Actions tab with `workflow_dispatch` and the same version number. For
+   example, use `0.1.1` for tag `v0.1.1`; the workflow will verify the tag
+   exists, check it out, and publish the assets for that tag.
+
+8. Download the `.zip` and `.dmg` from GitHub Releases.
+
+9. Verify on a clean macOS user account:
 
    - The app launches without Gatekeeper warnings beyond the normal first-run
      confirmation.

@@ -14,6 +14,9 @@ on:
 permissions:
   contents: read
 
+env:
+  NOTARY_WAIT_TIMEOUT: 45m
+
 jobs:
   developer-id:
     name: Developer ID Release
@@ -21,17 +24,30 @@ jobs:
     permissions:
       contents: read
     runs-on: macos-latest
+    timeout-minutes: 120
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+        timeout-minutes: 5
         with:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Preserve Release Helpers
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          RELEASE_TOOLS_DIR="$RUNNER_TEMP/release-tools"
+          mkdir -p "$RELEASE_TOOLS_DIR"
+          cp Scripts/notarize.sh "$RELEASE_TOOLS_DIR/notarize.sh"
+          chmod +x "$RELEASE_TOOLS_DIR/notarize.sh"
+          echo "RELEASE_TOOLS_DIR=$RELEASE_TOOLS_DIR" >> "$GITHUB_ENV"
+
       - name: Determine Version
         id: version
+        timeout-minutes: 2
         env:
           VERSION_INPUT: ${{ inputs.version }}
         run: |
@@ -51,9 +67,11 @@ jobs:
           echo "RELEASE_ASSETS_DIR=$RUNNER_TEMP/release-assets" >> "$GITHUB_ENV"
 
       - name: Show Xcode
+        timeout-minutes: 1
         run: xcodebuild -version
 
       - name: Test
+        timeout-minutes: 20
         run: |
           xcodebuild test \
             -project PhotoDesqueeze.xcodeproj \
@@ -62,6 +80,7 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/PhotoDesqueezeDerivedData"
 
       - name: Import Developer ID Certificate
+        timeout-minutes: 5
         env:
           APPLE_DEVELOPER_ID_CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_BASE64 }}
           APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
@@ -94,6 +113,7 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN_PATH"
 
       - name: Build Developer ID App
+        timeout-minutes: 30
         env:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           VERSION: ${{ env.VERSION }}
@@ -101,6 +121,7 @@ jobs:
         run: Scripts/build-release.sh "$VERSION"
 
       - name: Notarize App
+        timeout-minutes: 50
         env:
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
@@ -110,16 +131,18 @@ jobs:
           APP_PATH="$RELEASE_DIR/export/PhotoDesqueeze.app"
           NOTARY_ZIP="$RUNNER_TEMP/PhotoDesqueeze-notary.zip"
           ditto -c -k --keepParent "$APP_PATH" "$NOTARY_ZIP"
-          Scripts/notarize.sh "$NOTARY_ZIP"
+          "$RELEASE_TOOLS_DIR/notarize.sh" "$NOTARY_ZIP"
           xcrun stapler staple "$APP_PATH"
 
       - name: Package Artifacts
+        timeout-minutes: 10
         env:
           VERSION: ${{ env.VERSION }}
           RELEASE_DIR: ${{ env.RELEASE_DIR }}
         run: Scripts/package-dmg.sh "$RELEASE_DIR/export/PhotoDesqueeze.app" "$VERSION"
 
       - name: Notarize DMG
+        timeout-minutes: 50
         env:
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
@@ -127,16 +150,18 @@ jobs:
         run: |
           set -euo pipefail
           DMG_PATH="$RELEASE_DIR/PhotoDesqueeze-$VERSION.dmg"
-          Scripts/notarize.sh "$DMG_PATH"
+          "$RELEASE_TOOLS_DIR/notarize.sh" "$DMG_PATH"
           xcrun stapler staple "$DMG_PATH"
 
       - name: Verify Release
+        timeout-minutes: 10
         run: |
           Scripts/verify-release.sh \
             "$RELEASE_DIR/export/PhotoDesqueeze.app" \
             "$RELEASE_DIR/PhotoDesqueeze-$VERSION.dmg"
 
       - name: Build Release Notes
+        timeout-minutes: 2
         run: |
           set -euo pipefail
           mkdir -p "$RELEASE_ASSETS_DIR"
@@ -151,13 +176,15 @@ jobs:
           fi
 
       - name: Stage Release Assets
+        timeout-minutes: 2
         run: |
           set -euo pipefail
           cp "$RELEASE_DIR/PhotoDesqueeze-$VERSION.zip" "$RELEASE_ASSETS_DIR/"
           cp "$RELEASE_DIR/PhotoDesqueeze-$VERSION.dmg" "$RELEASE_ASSETS_DIR/"
 
       - name: Upload Release Assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
+        timeout-minutes: 10
         with:
           name: developer-id-release
           path: ${{ runner.temp }}/release-assets
@@ -181,14 +208,17 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Download Release Assets
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
+        timeout-minutes: 5
         with:
           name: developer-id-release
           path: release-assets
 
       - name: Publish GitHub Release
+        timeout-minutes: 5
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}

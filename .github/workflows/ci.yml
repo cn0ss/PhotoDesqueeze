@@ -15,14 +15,17 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+        timeout-minutes: 5
         with:
           persist-credentials: false
 
       - name: Show Xcode
+        timeout-minutes: 1
         run: xcodebuild -version
 
       - name: Test
+        timeout-minutes: 20
         run: |
           xcodebuild test \
             -project PhotoDesqueeze.xcodeproj \

@@ -3,6 +3,7 @@ set -euo pipefail
 
 ARTIFACT="${1:-}"
 TEMP_KEY_PATH=""
+NOTARY_WAIT_TIMEOUT="${NOTARY_WAIT_TIMEOUT:-45m}"
 
 die() {
   printf 'error: %s\n' "$*" >&2
@@ -40,8 +41,11 @@ fi
 
 [[ -f "$KEY_PATH" ]] || die "Notary key not found at $KEY_PATH"
 
+printf 'Submitting %s to Apple notarization service; wait timeout: %s\n' "$ARTIFACT" "$NOTARY_WAIT_TIMEOUT" >&2
+
 xcrun notarytool submit "$ARTIFACT" \
   --key "$KEY_PATH" \
   --key-id "$APPLE_NOTARY_KEY_ID" \
   --issuer "$APPLE_NOTARY_ISSUER_ID" \
-  --wait
+  --wait \
+  --timeout "$NOTARY_WAIT_TIMEOUT"
