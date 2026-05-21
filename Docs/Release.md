@@ -56,7 +56,9 @@ stage.
    tests, archives the app, notarizes the app, creates the DMG, notarizes the
    DMG, verifies Gatekeeper, and only then publishes the GitHub Release. The
    workflow has explicit step timeouts so stalled Apple or Xcode operations fail
-   instead of waiting indefinitely.
+   instead of waiting indefinitely. Developer ID timestamp signing is retried
+   with a short timeout because Apple's timestamp service can otherwise leave
+   `codesign --timestamp` waiting without a useful failure.
 
 7. If a tagged run was canceled before publishing, re-run the release from the
    Actions tab with `workflow_dispatch` and the same version number. For
