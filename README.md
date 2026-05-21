@@ -69,6 +69,16 @@ xcodebuild test \
 
 The GitHub Actions workflow runs the same test command on macOS.
 
+## Download
+
+Public builds are intended to ship through GitHub Releases as signed and
+notarized `.zip` and `.dmg` artifacts. Download the latest release from:
+
+https://github.com/cn0ss/PhotoDesqueeze/releases
+
+If no release is published yet, build locally from Xcode or wait for the first
+tagged Developer ID release.
+
 ## Signing
 
 The app target uses bundle identifier `dev.niklasschmidt.PhotoDesqueeze`, and
@@ -95,6 +105,18 @@ The processing path is intentionally simple and native:
   succeeds.
 
 More detail is in [Docs/Research.md](Docs/Research.md).
+
+## Release
+
+Release signing and notarization are documented in:
+
+- [Docs/Signing.md](Docs/Signing.md)
+- [Docs/Release.md](Docs/Release.md)
+
+The release workflow uses Developer ID signing and Apple's `notarytool`. Signing
+certificates, App Store Connect API keys, team IDs, and provisioning profiles
+must be configured as GitHub secrets or local environment values, never committed
+to this repository.
 
 ## Current Limitations
 

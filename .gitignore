@@ -15,3 +15,12 @@ xcuserdata/
 # App output
 Desqueezed TIFF/
 *.tiff.tmp
+
+# Signing and release secrets
+*.p12
+*.cer
+*.pem
+*.key
+*.mobileprovision
+*.provisionprofile
+.env
