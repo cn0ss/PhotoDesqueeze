@@ -4,6 +4,8 @@ PhotoDesqueeze is a native macOS SwiftUI app for batch anamorphic desqueeze.
 It reads a folder of RAW or rendered images, stretches width by the selected
 lens factor, and writes practical editing masters as 16-bit TIFF files.
 
+![PhotoDesqueeze main window](Docs/Assets/photodesqueeze-main.png)
+
 The intended workflow is:
 
 1. Keep original RAW files untouched.
