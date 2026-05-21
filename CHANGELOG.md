@@ -2,6 +2,14 @@
 
 All notable PhotoDesqueeze changes are documented here.
 
+## [0.1.1]
+
+### Fixed
+
+- Sign the DMG container before notarization so Gatekeeper accepts the
+  downloaded disk image.
+- Harden GitHub Actions permissions for CI and release publishing.
+
 ## [0.1.0]
 
 ### Added

@@ -17,8 +17,8 @@ Release builds use Developer ID signing in CI.
 
 ## GitHub Secrets
 
-Configure these secrets in the GitHub repository before running the release
-workflow:
+Configure these secrets in the GitHub `release` environment before running the
+release workflow:
 
 - `APPLE_DEVELOPER_ID_CERTIFICATE_BASE64`
 - `APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD`
@@ -33,6 +33,25 @@ the Developer ID Application certificate and private key.
 
 `APPLE_NOTARY_KEY_BASE64` is a base64-encoded App Store Connect API `.p8` key
 used by `xcrun notarytool`.
+
+## GitHub Repository Settings
+
+Use the repository settings to keep release signing outside untrusted CI:
+
+- Set the default `GITHUB_TOKEN` permissions to read-only.
+- Create a `release` environment and require a reviewer before deployments can
+  access its secrets.
+- Store Apple signing and notarization secrets only in the `release`
+  environment, not as plain repository-wide secrets.
+- Protect tags matching `v*.*.*` so only maintainers can create them, and block
+  tag deletion or force updates.
+- Keep pull request CI on `pull_request`. Do not use `pull_request_target` for
+  jobs that check out, build, test, cache, or otherwise execute pull request
+  code.
+- Do not add persistent dependency or build caches to release jobs. If a future
+  workflow needs caching, keep caches out of jobs with Apple secrets and do not
+  restore caches produced by untrusted pull requests.
+- Do not pass artifacts from pull request workflows into release workflows.
 
 ## Local Release Environment
 
@@ -56,6 +75,8 @@ Then use the release scripts in `Docs/Release.md`.
 - Never commit `DEVELOPMENT_TEAM` to `project.pbxproj`.
 - Keep the GitHub workflow reading signing material from secrets only.
 - Use `notarytool`; do not add `altool` notarization.
+- Keep Developer ID signing and GitHub release publishing in separate jobs so
+  the job with Apple secrets does not receive a write-scoped `GITHUB_TOKEN`.
 
 References:
 

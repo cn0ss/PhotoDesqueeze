@@ -6,6 +6,7 @@ APP_PATH="${1:-}"
 VERSION="${2:-${VERSION:-}}"
 RELEASE_DIR="${RELEASE_DIR:-"$ROOT_DIR/build/release"}"
 APP_NAME="${APP_NAME:-PhotoDesqueeze}"
+DMG_CODE_SIGN_IDENTITY="${DMG_CODE_SIGN_IDENTITY:-Developer ID Application}"
 
 die() {
   printf 'error: %s\n' "$*" >&2
@@ -34,5 +35,9 @@ hdiutil create \
   -ov \
   -format UDZO \
   "$DMG_PATH"
+
+if [[ "$DMG_CODE_SIGN_IDENTITY" != "-" ]]; then
+  codesign --force --sign "$DMG_CODE_SIGN_IDENTITY" --timestamp "$DMG_PATH"
+fi
 
 printf '%s\n%s\n' "$ZIP_PATH" "$DMG_PATH"

@@ -46,8 +46,8 @@ stage.
 5. Tag the release.
 
    ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
    ```
 
 6. GitHub Actions runs `.github/workflows/release.yml`.
@@ -73,14 +73,14 @@ export APPLE_NOTARY_ISSUER_ID="00000000-0000-0000-0000-000000000000"
 export APPLE_NOTARY_KEY_PATH="$HOME/AuthKey_ABC123DEFG.p8"
 export RELEASE_DIR="$PWD/build/release"
 
-APP_PATH="$(Scripts/build-release.sh 0.1.0)"
+APP_PATH="$(Scripts/build-release.sh X.Y.Z)"
 ditto -c -k --keepParent "$APP_PATH" "$RELEASE_DIR/PhotoDesqueeze-notary.zip"
 Scripts/notarize.sh "$RELEASE_DIR/PhotoDesqueeze-notary.zip"
 xcrun stapler staple "$APP_PATH"
-Scripts/package-dmg.sh "$APP_PATH" 0.1.0
-Scripts/notarize.sh "$RELEASE_DIR/PhotoDesqueeze-0.1.0.dmg"
-xcrun stapler staple "$RELEASE_DIR/PhotoDesqueeze-0.1.0.dmg"
-Scripts/verify-release.sh "$APP_PATH" "$RELEASE_DIR/PhotoDesqueeze-0.1.0.dmg"
+Scripts/package-dmg.sh "$APP_PATH" X.Y.Z
+Scripts/notarize.sh "$RELEASE_DIR/PhotoDesqueeze-X.Y.Z.dmg"
+xcrun stapler staple "$RELEASE_DIR/PhotoDesqueeze-X.Y.Z.dmg"
+Scripts/verify-release.sh "$APP_PATH" "$RELEASE_DIR/PhotoDesqueeze-X.Y.Z.dmg"
 ```
 
 ## Release Artifacts

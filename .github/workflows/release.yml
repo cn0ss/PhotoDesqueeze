@@ -12,30 +12,43 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   developer-id:
     name: Developer ID Release
+    environment: release
+    permissions:
+      contents: read
     runs-on: macos-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Determine Version
+        id: version
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
           set -euo pipefail
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Release tag must match vX.Y.Z" >&2; exit 1; }
             VERSION="${GITHUB_REF_NAME#v}"
           else
-            VERSION="${{ inputs.version }}"
+            VERSION="$VERSION_INPUT"
           fi
-          [[ -n "$VERSION" ]] || { echo "VERSION is required" >&2; exit 1; }
-          git rev-parse "v$VERSION" >/dev/null
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "VERSION must match X.Y.Z" >&2; exit 1; }
+          git rev-parse --verify --quiet "refs/tags/v$VERSION^{commit}" >/dev/null || { echo "Tag v$VERSION does not exist" >&2; exit 1; }
+          git checkout --detach "refs/tags/v$VERSION"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "RELEASE_DIR=$RUNNER_TEMP/release" >> "$GITHUB_ENV"
+          echo "RELEASE_ASSETS_DIR=$RUNNER_TEMP/release-assets" >> "$GITHUB_ENV"
 
       - name: Show Xcode
         run: xcodebuild -version
@@ -61,6 +74,8 @@ jobs:
 
           CERT_PATH="$RUNNER_TEMP/developer-id.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/release-signing.keychain-db"
+          echo "SIGNING_CERT_PATH=$CERT_PATH" >> "$GITHUB_ENV"
+          echo "SIGNING_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
           printf '%s' "$APPLE_DEVELOPER_ID_CERTIFICATE_BASE64" | base64 -D > "$CERT_PATH"
           security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -68,7 +83,6 @@ jobs:
           security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security import "$CERT_PATH" \
             -P "$APPLE_DEVELOPER_ID_CERTIFICATE_PASSWORD" \
-            -A \
             -t cert \
             -f pkcs12 \
             -k "$KEYCHAIN_PATH"
@@ -125,7 +139,8 @@ jobs:
       - name: Build Release Notes
         run: |
           set -euo pipefail
-          NOTES_PATH="$RUNNER_TEMP/release-notes.md"
+          mkdir -p "$RELEASE_ASSETS_DIR"
+          NOTES_PATH="$RELEASE_ASSETS_DIR/release-notes.md"
           awk -v version="$VERSION" '
             $0 == "## [" version "]" { include = 1; next }
             /^## \[/ && include { include = 0 }
@@ -134,11 +149,50 @@ jobs:
           if [[ ! -s "$NOTES_PATH" ]]; then
             printf 'See CHANGELOG.md for release notes.\n' > "$NOTES_PATH"
           fi
-          echo "RELEASE_NOTES=$NOTES_PATH" >> "$GITHUB_ENV"
+
+      - name: Stage Release Assets
+        run: |
+          set -euo pipefail
+          cp "$RELEASE_DIR/PhotoDesqueeze-$VERSION.zip" "$RELEASE_ASSETS_DIR/"
+          cp "$RELEASE_DIR/PhotoDesqueeze-$VERSION.dmg" "$RELEASE_ASSETS_DIR/"
+
+      - name: Upload Release Assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: developer-id-release
+          path: ${{ runner.temp }}/release-assets
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Clean Up Signing Material
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ -n "${SIGNING_KEYCHAIN_PATH:-}" && -f "$SIGNING_KEYCHAIN_PATH" ]]; then
+            security delete-keychain "$SIGNING_KEYCHAIN_PATH" || true
+          fi
+          if [[ -n "${SIGNING_CERT_PATH:-}" && -f "$SIGNING_CERT_PATH" ]]; then
+            rm -f "$SIGNING_CERT_PATH"
+          fi
+
+  publish:
+    name: Publish GitHub Release
+    needs: developer-id
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Release Assets
+        uses: actions/download-artifact@v4
+        with:
+          name: developer-id-release
+          path: release-assets
 
       - name: Publish GitHub Release
         env:
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.developer-id.outputs.version }}
         run: |
           set -euo pipefail
           TAG="v$VERSION"
@@ -147,9 +201,9 @@ jobs:
             gh release create "$TAG" \
               --verify-tag \
               --title "PhotoDesqueeze $TAG" \
-              --notes-file "$RELEASE_NOTES"
+              --notes-file "release-assets/release-notes.md"
           fi
           gh release upload "$TAG" \
-            "$RELEASE_DIR/PhotoDesqueeze-$VERSION.zip" \
-            "$RELEASE_DIR/PhotoDesqueeze-$VERSION.dmg" \
+            "release-assets/PhotoDesqueeze-$VERSION.zip" \
+            "release-assets/PhotoDesqueeze-$VERSION.dmg" \
             --clobber
