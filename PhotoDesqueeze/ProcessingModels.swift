@@ -66,13 +66,98 @@ enum DesqueezeAxis: String, CaseIterable, Identifiable {
     }
 }
 
+enum CollisionMode: String, CaseIterable, Identifiable {
+    case autoRename = "Auto Rename"
+    case overwrite = "Overwrite"
+    case skipExisting = "Skip Existing"
+
+    var id: String { rawValue }
+}
+
+enum OutputFormat: String, CaseIterable, Identifiable {
+    case tiff16 = "16-bit TIFF"
+
+    var id: String { rawValue }
+    var fileExtension: String { "tiff" }
+}
+
+struct ImageDimensions: Equatable {
+    var width: Int
+    var height: Int
+
+    init(width: Int, height: Int) {
+        self.width = max(0, width)
+        self.height = max(0, height)
+    }
+
+    init(extent: CGRect) {
+        self.init(
+            width: Int(max(0, extent.width).rounded()),
+            height: Int(max(0, extent.height).rounded())
+        )
+    }
+
+    var label: String {
+        guard width > 0 && height > 0 else { return "-" }
+        return "\(width)x\(height)"
+    }
+}
+
+struct ImageMetadata: Equatable, @unchecked Sendable {
+    var cameraMake: String?
+    var cameraModel: String?
+    var lensModel: String?
+    var captureDate: String?
+    var iso: String?
+    var exposureTime: String?
+    var aperture: String?
+    var focalLength: String?
+    var safeDestinationProperties: [CFString: Any]
+
+    static let empty = ImageMetadata(safeDestinationProperties: [:])
+
+    init(
+        cameraMake: String? = nil,
+        cameraModel: String? = nil,
+        lensModel: String? = nil,
+        captureDate: String? = nil,
+        iso: String? = nil,
+        exposureTime: String? = nil,
+        aperture: String? = nil,
+        focalLength: String? = nil,
+        safeDestinationProperties: [CFString: Any] = [:]
+    ) {
+        self.cameraMake = cameraMake
+        self.cameraModel = cameraModel
+        self.lensModel = lensModel
+        self.captureDate = captureDate
+        self.iso = iso
+        self.exposureTime = exposureTime
+        self.aperture = aperture
+        self.focalLength = focalLength
+        self.safeDestinationProperties = safeDestinationProperties
+    }
+
+    static func == (lhs: ImageMetadata, rhs: ImageMetadata) -> Bool {
+        lhs.cameraMake == rhs.cameraMake
+            && lhs.cameraModel == rhs.cameraModel
+            && lhs.lensModel == rhs.lensModel
+            && lhs.captureDate == rhs.captureDate
+            && lhs.iso == rhs.iso
+            && lhs.exposureTime == rhs.exposureTime
+            && lhs.aperture == rhs.aperture
+            && lhs.focalLength == rhs.focalLength
+    }
+}
+
 struct ProcessingOptions: Equatable {
     var factor: Double
     var axis: DesqueezeAxis
     var colorSpace: OutputColorSpace
+    var outputFormat: OutputFormat
+    var collisionMode: CollisionMode
     var recursive: Bool
     var preserveSubfolders: Bool
-    var overwriteExistingFiles: Bool
 
     var normalizedFactor: CGFloat {
         CGFloat(max(0.01, factor))
@@ -94,6 +179,7 @@ enum ProcessingStatus: String {
     case succeeded = "Done"
     case skipped = "Skipped"
     case failed = "Failed"
+    case cancelled = "Cancelled"
 }
 
 struct ProcessedImageResult: Identifiable, Equatable {
@@ -101,10 +187,36 @@ struct ProcessedImageResult: Identifiable, Equatable {
     var sourceURL: URL
     var outputURL: URL?
     var status: ProcessingStatus
-    var message: String
+    var sourceDimensions: ImageDimensions?
+    var outputDimensions: ImageDimensions?
+    var axisMode: DesqueezeAxis?
+    var resolvedAxis: DesqueezeAxis?
+    var duration: TimeInterval?
+    var metadata: ImageMetadata?
+    var failureReason: String?
 
     var sourceName: String {
         sourceURL.lastPathComponent
+    }
+
+    var dimensionsLabel: String {
+        guard let sourceDimensions else { return "-" }
+        return "\(sourceDimensions.label) -> \(outputDimensions?.label ?? "-")"
+    }
+
+    var message: String {
+        switch status {
+        case .succeeded:
+            let outputName = outputURL?.lastPathComponent ?? "output"
+            let axis = resolvedAxis?.rawValue.lowercased() ?? "unknown"
+            return "Wrote \(outputName) (\(axis))"
+        case .skipped:
+            return "Skipped existing file"
+        case .failed:
+            return failureReason ?? "Failed"
+        case .cancelled:
+            return "Cancelled"
+        }
     }
 }
 
@@ -117,6 +229,35 @@ struct BatchProgress: Equatable {
     var fractionCompleted: Double {
         guard totalCount > 0 else { return 0 }
         return Double(completedCount) / Double(totalCount)
+    }
+
+    var succeededCount: Int {
+        results.filter { $0.status == .succeeded }.count
+    }
+
+    var failedCount: Int {
+        results.filter { $0.status == .failed }.count
+    }
+
+    var skippedCount: Int {
+        results.filter { $0.status == .skipped }.count
+    }
+
+    var cancelledCount: Int {
+        results.filter { $0.status == .cancelled }.count
+    }
+}
+
+struct PreviewResult: Equatable {
+    var sourceURL: URL
+    var sourceDimensions: ImageDimensions
+    var outputDimensions: ImageDimensions
+    var resolvedAxis: DesqueezeAxis
+    var originalPNGData: Data
+    var desqueezedPNGData: Data
+
+    var summary: String {
+        "\(sourceURL.lastPathComponent): \(sourceDimensions.label) -> \(outputDimensions.label), \(resolvedAxis.rawValue.lowercased())"
     }
 }
 

@@ -26,14 +26,19 @@ editable masters.
 - Folder input and folder output.
 - RAW-first loading through Apple's Core Image RAW pipeline.
 - Fallback support for common rendered formats supported by macOS, including TIFF, JPEG, PNG, HEIC/HEIF, and WebP.
-- Batch processing with progress, cancellation, and per-file results.
+- Batch processing with progress, cancellation, and structured per-file results.
+- Side-by-side preview from the first image in the selected folder.
 - Built-in anamorphic presets plus custom factors.
 - Automatic horizontal/vertical desqueeze axis selection with manual overrides.
 - 16-bit/channel TIFF export.
 - Display P3 or sRGB output color space.
 - Optional recursive folder scanning.
 - Optional preservation of input subfolder structure.
-- Optional overwrite protection with automatic `-2`, `-3`, etc. filenames.
+- Existing-file handling: auto-rename, overwrite, or skip.
+- Atomic TIFF writes, so incomplete temp files are not promoted to final output.
+- Partial safe metadata preservation for TIFF/EXIF camera fields.
+- CSV manifest written to the output folder after each batch.
+- Security-scoped folder bookmarks so selected folders can be restored on launch.
 
 ## Build
 
@@ -58,17 +63,31 @@ xcodebuild test \
   -derivedDataPath /private/tmp/PhotoDesqueezeDerivedData
 ```
 
+The GitHub Actions workflow runs the same test command on macOS.
+
+## Signing
+
+The app target uses bundle identifier `dev.niklasschmidt.PhotoDesqueeze`, and
+the test target uses `dev.niklasschmidt.PhotoDesqueezeTests`. The project is
+configured for manual signing without a committed `DEVELOPMENT_TEAM`, certificate,
+provisioning profile, or private key. Choose a local signing team in Xcode when
+you want to archive or distribute a signed build.
+
 ## Implementation Notes
 
 The processing path is intentionally simple and native:
 
 - `NSOpenPanel` selects input and output folders.
-- App Sandbox uses user-selected read/write file access.
+- App Sandbox uses user-selected read/write file access, with security-scoped
+  bookmarks for restored folders.
 - `UTType` and fallback RAW extensions identify candidate images.
 - `CIRAWFilter` opens RAW files supported by macOS.
 - `CIImage(contentsOf:options:)` opens rendered image formats and applies orientation metadata.
 - `CILanczosScaleTransform` performs high-quality scaling. Landscape files are stretched horizontally; 90-degree rotated or portrait files can be stretched vertically.
-- `CIContext.writeTIFFRepresentation` writes the rendered output as `.RGBA16` TIFF in the selected RGB color space.
+- `CIContext.writeTIFFRepresentation` writes the rendered output as `.RGBA16`
+  TIFF in the selected RGB color space.
+- Output is written through a temporary file and moved into place after render
+  succeeds.
 
 More detail is in [Docs/Research.md](Docs/Research.md).
 
@@ -76,7 +95,9 @@ More detail is in [Docs/Research.md](Docs/Research.md).
 
 - RAW support depends on Apple's RAW decoders and the camera models supported by the installed macOS version.
 - Output is a rendered 16-bit TIFF, not a new RAW file.
-- Metadata copying is minimal in this first version.
+- Metadata copying is intentionally conservative. TIFF/EXIF camera fields are
+  copied when Image I/O exposes them, while geometry-sensitive orientation data
+  is removed from the destination.
 - Automatic axis detection uses orientation metadata first, then image dimensions as a fallback.
 - Processing is sequential to avoid memory spikes with large RAW batches.
 

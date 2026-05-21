@@ -1,6 +1,6 @@
 # Research and Implementation Plan
 
-This document captures the technical decisions behind the first PhotoDesqueeze
+This document captures the technical decisions behind the PhotoDesqueeze
 implementation.
 
 ## Product Goal
@@ -26,6 +26,7 @@ extends recursively to items inside that folder.
 Implementation:
 
 - `FolderPanel.chooseFolder(...)`
+- `SecurityScopedFolderBookmarkStore`
 - `PhotoDesqueeze.entitlements`
 - `com.apple.security.app-sandbox`
 - `com.apple.security.files.user-selected.read-write`
@@ -106,7 +107,7 @@ horizontal scaling. Vertical stretching is represented as:
 
 That keeps width stable while increasing height.
 
-For a 1.33x lens:
+For a 1.33x lens in horizontal mode:
 
 - `scale = 1.0`
 - `aspectRatio = 1.33`
@@ -121,6 +122,8 @@ The app defaults to `Auto` axis selection:
 
 Manual `Horizontal` and `Vertical` overrides are available for files whose
 orientation metadata has already been baked in or stripped by another app.
+The preview pane renders the first scanned image with the same automatic/manual
+axis resolution, so a wrong axis choice is visible before starting a batch.
 
 Implementation:
 
@@ -145,10 +148,30 @@ Implementation:
 - `CIContext.writeTIFFRepresentation(...)`
 - `CIFormat.RGBA16`
 - `CGColorSpace.displayP3` or `CGColorSpace.sRGB`
+- Atomic temporary-file write followed by `FileManager.moveItem(...)`
+- Conservative TIFF/EXIF properties passed through Image I/O options
 
 Source:
 
 - https://developer.apple.com/documentation/coreimage/cicontext/1642213-writetiffrepresentation
+
+### Metadata
+
+The app reads Image I/O properties from the source image and keeps a small
+structured summary in each result and in the CSV manifest:
+
+- camera make
+- camera model
+- lens model
+- capture date
+- ISO, exposure time, aperture, and focal length when available
+
+For output files, only conservative TIFF/EXIF dictionaries are copied. Orientation
+fields are removed because the desqueeze result is already rendered into its new
+geometry, and preserving stale orientation metadata would risk incorrect display
+in downstream editors.
+
+The app intentionally does not copy GPS metadata in this version.
 
 ## Batch Behavior
 
@@ -163,22 +186,46 @@ Output naming:
 - Factor: `1.33x`
 - Output: `shot001_desqueezed_1_33x.tiff`
 
-If overwrite protection is enabled and the output file exists, the app writes:
+Existing-file behavior is controlled by `CollisionMode`:
 
-- `shot001_desqueezed_1_33x-2.tiff`
-- `shot001_desqueezed_1_33x-3.tiff`
+- `Auto Rename`: write `shot001_desqueezed_1_33x-2.tiff`,
+  `shot001_desqueezed_1_33x-3.tiff`, and so on.
+- `Overwrite`: replace the existing destination only after the new TIFF render
+  succeeds.
+- `Skip Existing`: leave the existing destination untouched and record a skipped
+  result.
+
+After a batch, the app writes `PhotoDesqueeze manifest.csv` into the output
+folder. The manifest records source path, output path, status, selected axis,
+resolved axis, dimensions, duration, camera fields, and error text.
+
+## App UI
+
+The SwiftUI interface is a practical batch tool rather than a landing page:
+
+- input and output folder rows
+- lens preset/custom factor controls
+- axis, color space, and existing-file controls
+- recursive scanning and folder-preservation toggles
+- side-by-side original/desqueezed preview
+- progress, cancellation, output reveal, and result reveal actions
+
+The target bundle identifier is `dev.niklasschmidt.PhotoDesqueeze`. Signing is
+manual, and no team ID, certificate, profile, or private key is committed.
 
 ## Test Coverage
 
-The first tests cover logic that can regress without needing sample proprietary
+The tests cover logic that can regress without needing sample proprietary
 RAW files in the repository:
 
 - Factor labels are filesystem-friendly.
 - Output paths preserve relative folders.
-- Output paths avoid overwrites.
+- Output paths avoid overwrites or skip existing destinations according to the
+  selected collision mode.
 - Scanner finds RAW and rendered image extensions recursively and non-recursively.
 - Automatic axis selection handles rotated metadata and portrait dimensions.
 - Generated TIFF fixtures validate horizontal and vertical 16-bit TIFF output.
+- Generated TIFF fixtures validate manifest creation.
 
 Command:
 
@@ -192,10 +239,13 @@ xcodebuild test \
 
 ## Next Implementation Steps
 
-Useful follow-ups after the first version:
+Useful follow-ups after the current version:
 
-- Add metadata copying from source to output TIFF where safe.
-- Add a small preview pane for the selected factor.
+- Add a small per-file preview picker instead of previewing only the first image.
 - Add optional squeeze mode for workflows that need to reverse a prior desqueeze.
-- Add saved security-scoped bookmarks for persistent input/output folders.
-- Add a sample-image integration test using generated TIFF fixtures.
+- Add configurable RAW development controls such as exposure bias, white balance,
+  and highlight recovery if Core Image exposes the needed data for a file.
+- Add configurable output naming templates.
+- Add optional concurrency with a low default and memory-pressure testing.
+- Add a notarized release workflow once signing credentials are handled outside
+  the repository.

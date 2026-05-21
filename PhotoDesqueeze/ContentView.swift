@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
@@ -8,11 +9,18 @@ struct ContentView: View {
             header
             folderSection
             settingsSection
+            previewSection
             processingSection
             resultsSection
         }
         .padding(24)
-        .frame(minWidth: 760, minHeight: 560)
+        .frame(minWidth: 860, minHeight: 720)
+        .onChange(of: model.inputFolder) { _, _ in model.refreshPreview() }
+        .onChange(of: model.selectedPreset) { _, _ in model.refreshPreview() }
+        .onChange(of: model.customFactorText) { _, _ in model.refreshPreview() }
+        .onChange(of: model.desqueezeAxis) { _, _ in model.refreshPreview() }
+        .onChange(of: model.outputColorSpace) { _, _ in model.refreshPreview() }
+        .onChange(of: model.scanSubfolders) { _, _ in model.refreshPreview() }
     }
 
     private var header: some View {
@@ -84,10 +92,51 @@ struct ContentView: View {
                     }
                     .frame(width: 220)
 
+                    Picker("Existing", selection: $model.collisionMode) {
+                        ForEach(CollisionMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .frame(width: 230)
+
                     Toggle("Scan subfolders", isOn: $model.scanSubfolders)
                     Toggle("Preserve folders", isOn: $model.preserveSubfolders)
-                    Toggle("Overwrite", isOn: $model.overwriteExistingFiles)
                 }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var previewSection: some View {
+        GroupBox("Preview") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text(model.previewMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Spacer()
+
+                    if model.isRenderingPreview {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+
+                    Button {
+                        model.refreshPreview()
+                    } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(model.inputFolder == nil || model.isProcessing)
+                }
+
+                HStack(spacing: 12) {
+                    PreviewImageView(title: "Original", data: model.preview?.originalPNGData)
+                    PreviewImageView(title: "Desqueezed", data: model.preview?.desqueezedPNGData)
+                }
+                .frame(height: 180)
             }
             .padding(.vertical, 4)
         }
@@ -187,7 +236,7 @@ private struct ResultRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(result.sourceName)
                     .font(.callout)
-                Text(result.message)
+                Text("\(result.message)  \(result.dimensionsLabel)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -195,8 +244,62 @@ private struct ResultRow: View {
             }
 
             Spacer()
+
+            if let duration = result.duration {
+                Text(String(format: "%.2fs", duration))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([result.sourceURL])
+            } label: {
+                Image(systemName: "doc")
+            }
+            .buttonStyle(.borderless)
+            .help("Reveal source")
+
+            if let outputURL = result.outputURL {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([outputURL])
+                } label: {
+                    Image(systemName: "arrow.up.forward.app")
+                }
+                .buttonStyle(.borderless)
+                .help("Reveal output")
+            }
         }
         .padding(.vertical, 4)
+    }
+}
+
+private struct PreviewImageView: View {
+    var title: String
+    var data: Data?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ZStack {
+                Rectangle()
+                    .fill(.quaternary.opacity(0.4))
+
+                if let data, let image = NSImage(data: data) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .padding(6)
+                } else {
+                    Image(systemName: "photo")
+                        .font(.title2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
     }
 }
 
@@ -209,6 +312,8 @@ private extension ProcessingStatus {
             return "minus.circle.fill"
         case .failed:
             return "exclamationmark.triangle.fill"
+        case .cancelled:
+            return "xmark.circle.fill"
         }
     }
 
@@ -220,6 +325,8 @@ private extension ProcessingStatus {
             return .secondary
         case .failed:
             return .red
+        case .cancelled:
+            return .orange
         }
     }
 }
